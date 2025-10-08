@@ -4,7 +4,7 @@
 # --- BIBLIOTECAS PADRÃO ---
 import speech_recognition as sr
 from gtts import gTTS
-from playsound import playsound
+from playsound3 import playsound
 import datetime
 import os
 import time
@@ -95,10 +95,11 @@ except Exception as e:
 
 # --- FUNÇÕES DE FALA E ESCUTA ---
 
-def speak(text):
-    print("[SPEAK ONLINE]", text)
+# speak agora aceita 'lang' para gTTS, permitindo respostas em inglês se desejado
+def speak(text, lang='pt'):
+    print(f"[SPEAK ONLINE - {lang.upper()}]", text)
     try:
-        tts = gTTS(text=text, lang='pt')
+        tts = gTTS(text=text, lang=lang)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as fp:
             filename = fp.name
         tts.save(filename)
@@ -115,13 +116,16 @@ def speak_offline(text):
     print("[SPEAK OFFLINE]", text)
     engine = pyttsx3.init()
     voices = engine.getProperty('voices')
+    # Tenta encontrar uma voz em português do Brasil
     for voice in voices:
-        if "brazil" in voice.name.lower():
+        if "brazil" in voice.name.lower() or "portuguese" in voice.name.lower():
             engine.setProperty('voice', voice.id)
             break
+    # Se não encontrar, usará a voz padrão do sistema, que pode ser em inglês
     engine.say(text)
     engine.runAndWait()
 
+# listen volta a ser padrão para pt-BR, pois o Google Speech Recognition consegue captar nomes em inglês
 def listen(timeout=5, phrase_time_limit=6):
     with sr.Microphone() as source:
         try:
@@ -130,6 +134,7 @@ def listen(timeout=5, phrase_time_limit=6):
             print("Reconhecendo...")
             return r.recognize_google(audio, language='pt-BR').lower()
         except (sr.WaitTimeoutError, sr.UnknownValueError):
+            print("Não entendi o que você disse.") # Adicionei uma mensagem aqui
             return ""
         except sr.RequestError as e:
             print(f"Erro no serviço de reconhecimento; {e}")
@@ -138,7 +143,7 @@ def listen(timeout=5, phrase_time_limit=6):
             print(f"Erro na escuta: {e}")
             return ""
 
-# --- FUNÇÕES DE COMANDOS ---
+# --- FUNÇÕES DE COMANDOS (Sem alterações aqui, elas já manipulam strings) ---
 
 def add_event(text):
     data_cadastro = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -290,7 +295,8 @@ def play_spotify_music_api(music_name):
             return speak("Não consegui autenticar com o Spotify. A reprodução não pode continuar.")
 
     try:
-        # Busca por tracks
+        # Busca por tracks - O SPOTIFY API É ÓTIMO EM LIDAR COM NOMES EM QUALQUER IDIOMA
+        # O importante é que a transcrição do speech_recognition seja precisa.
         results = sp.search(q=music_name, type='track', limit=1)
         if not results['tracks']['items']:
             return speak(f"Não encontrei a música {music_name} no Spotify.")
@@ -317,7 +323,7 @@ def play_spotify_music_api(music_name):
                 first_device_id = devices['devices'][0]['id']
                 sp.transfer_playback(device_id=first_device_id, force_play=True)
                 # Dá um pequeno tempo e tenta iniciar a música novamente no dispositivo transferido
-                time.sleep(1) 
+                time.sleep(1)
                 sp.start_playback(device_id=first_device_id, uris=[track_uri])
                 speak(f"Tocando {track_name} de {artist_name} no Spotify.")
             else:
@@ -340,6 +346,22 @@ def play_spotify_music_api(music_name):
         print(f"Erro ao tocar música no Spotify: {e}")
         speak("Desculpe, ocorreu um erro inesperado ao tentar tocar a música no Spotify.")
 
+# --- NOVA FUNÇÃO PARA ABRIR VÍDEOS DO YOUTUBE ---
+def open_youtube_video(query):
+    if not query:
+        return speak("Por favor, diga o que você gostaria de procurar no YouTube.")
+    
+    # Substitui espaços por '+' para a URL de pesquisa
+    search_query = query.replace(' ', '+')
+    youtube_url = f"https://www.youtube.com/results?search_query={search_query}"
+    
+    speak(f"Abrindo YouTube com a pesquisa por {query}.")
+    try:
+        webbrowser.open(youtube_url)
+    except Exception as e:
+        print(f"Erro ao abrir o navegador para o YouTube: {e}")
+        speak("Desculpe, não consegui abrir o YouTube no seu navegador.")
+
 
 # --- LOOP PRINCIPAL CONSOLIDADO ---
 speak("Assistente pronta. Diga 'Ok Jarvis' para ativar.")
@@ -351,7 +373,7 @@ try:
     while True:
         print("\nAguardando wake word...")
         wake = listen(timeout=10, phrase_time_limit=4)
-        if any(w in wake for w in ["ok Jarvis", "ok Jarvis", "Jarvis", "Jarvis"]):
+        if any(w in wake for w in ["ok Jarvis", "Jarvis"]): # Mantém a wake word em português
             speak("Sim?")
             cmd = listen(timeout=6, phrase_time_limit=7)
             print("Comando:", cmd)
@@ -408,18 +430,31 @@ try:
             elif any(w in cmd for w in ["equação", "resolver"]):
                 resolver_equacao(cmd)
             
-            # --- NOVO COMANDO PARA O SPOTIFY API ---
-            elif "tocar música" in cmd and "spotify" in cmd:
-                match = re.search(r"tocar música\s+(.*?)(?:\s+no spotify)?$", cmd)
-                if match:
-                    music_name = match.group(1).strip()
-                    if music_name:
-                        play_spotify_music_api(music_name) # Chama a nova função da API
-                    else:
-                        speak("Qual música você gostaria de tocar?")
+            # --- COMANDO PARA O SPOTIFY API ---
+            elif "tocar música" in cmd or "play song" in cmd:
+                music_name = ""
+                match_pt = re.search(r"(tocar música|tocar a música)\s+(.*?)(?:\s+(?:no|do)\s+spotify)?$", cmd)
+                match_en = re.search(r"(play song|play the song)\s+(.*?)(?:\s+(?:on)\s+spotify)?$", cmd)
+
+                if match_pt:
+                    music_name = match_pt.group(2).strip()
+                elif match_en:
+                    music_name = match_en.group(2).strip()
+
+                if music_name:
+                    speak(f"Procurando por {music_name} no Spotify.")
+                    play_spotify_music_api(music_name)
                 else:
                     speak("Qual música você gostaria de tocar?")
-
+            
+            # --- NOVO COMANDO PARA YOUTUBE ---
+            elif any(w in cmd for w in ["abrir youtube", "procurar no youtube", "tocar vídeo", "ver vídeo"]):
+                speak("O que você gostaria de procurar no YouTube?")
+                video_query = listen(timeout=8, phrase_time_limit=10)
+                if video_query:
+                    open_youtube_video(video_query)
+                else:
+                    speak("Não entendi o que você quer ver no YouTube.")
 
             elif any(w in cmd for w in ["sair", "encerrar", "desligar"]):
                 speak("Encerrando assistente. Até mais.")
@@ -427,9 +462,13 @@ try:
 
             else:
                 try:
-                    speak(f"O resultado é {safe_eval(cmd)}")
+                    # Tenta avaliar o comando como uma expressão matemática
+                    result = safe_eval(cmd)
+                    speak(f"O resultado é {result}")
                 except (ValueError, SyntaxError):
-                    speak("Comando não reconhecido. Tente novamente.")
+                    # Se não for um comando ou uma expressão, tenta buscar no Google
+                    speak(f"Comando não reconhecido. Procurando por '{cmd}' no Google.")
+                    webbrowser.open(f"https://www.google.com/search?q={cmd.replace(' ', '+')}")
 
 except KeyboardInterrupt:
     speak("Encerrando por interrupção.")
