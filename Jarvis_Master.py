@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-# --- BIBLIOTECAS PADRÃO ---
+# --- BIBLIOTERIAS PADRÃO ---
 import speech_recognition as sr
 from gtts import gTTS
 from playsound3 import playsound
@@ -15,9 +15,13 @@ import webbrowser # Para abrir URLs (ainda útil como fallback ou para a primeir
 
 # --- BIBLIOTECAS DE TERCEIROS (FUNCIONALIDADES ADICIONAIS) ---
 import requests  # Para Clima e Moedas
-from PIL import ImageGrab  # Para Captura de Tela
+from PIL import ImageGrab, Image  # Para Captura de Tela e para OCR (ainda necessário para ImageGrab)
 import spotipy # NOVA BIBLIOTECA PARA SPOTIFY
 from spotipy.oauth2 import SpotifyOAuth # Para autenticação do Spotify
+
+# Para reconhecimento de imagem e processamento
+import cv2
+import numpy as np # Adicionado para manipulação de arrays de imagem
 
 # Tente importar pyttsx3 para fala offline (opcional)
 try:
@@ -25,6 +29,8 @@ try:
     PYTTSX3_AVAILABLE = True
 except ImportError:
     PYTTSX3_AVAILABLE = False
+    print("Biblioteca 'pyttsx3' não encontrada. Fala offline não estará disponível.")
+
 
 # Tente importar bibliotecas para controle de volume (Windows)
 try:
@@ -34,6 +40,34 @@ try:
     PYCAW_AVAILABLE = True
 except ImportError:
     PYCAW_AVAILABLE = False
+    print("Biblioteca 'pycaw' não encontrada. Controle de volume não estará disponível.")
+
+
+# Para reconhecimento facial
+try:
+    import face_recognition
+    FACE_RECOGNITION_AVAILABLE = True
+    print("Biblioteca 'face_recognition' encontrada.")
+except ImportError:
+    FACE_RECOGNITION_AVAILABLE = False
+    print("Biblioteca 'face_recognition' não encontrada. Reconhecimento facial não estará disponível.")
+
+# Para OCR (Reconhecimento de Texto) com EasyOCR
+try:
+    import easyocr
+    EASYOCR_AVAILABLE = True
+    print("Biblioteca 'easyocr' encontrada.")
+    # Inicialize o leitor EasyOCR uma vez para reutilização
+    # 'en' para inglês, 'pt' para português. Adicione outros idiomas conforme necessário.
+    reader = easyocr.Reader(['en', 'pt']) # Carrega modelos para inglês e português
+    print("EasyOCR reader inicializado.")
+except ImportError:
+    EASYOCR_AVAILABLE = False
+    print("Biblioteca 'easyocr' não encontrada. Reconhecimento de letras (OCR) não estará disponível.")
+except Exception as e:
+    EASYOCR_AVAILABLE = False
+    print(f"Erro ao inicializar EasyOCR: {e}. Reconhecimento de letras (OCR) não estará disponível.")
+
 
 # --- CONFIGURAÇÕES E CONSTANTES ---
 
@@ -57,15 +91,10 @@ if not os.path.exists(AGENDA_FILE):
     open(AGENDA_FILE, 'w', encoding='utf-8').close()
 
 # --- CONFIGURAÇÕES DO SPOTIFY ---
-# USE SEUS DADOS AQUI!
 os.environ['SPOTIPY_CLIENT_ID'] = 'd2029dbe36b7479fbb1b4768e3d5246e'
 os.environ['SPOTIPY_CLIENT_SECRET'] = '76034efe75da40c78b81fdaed161e9ff'
-os.environ['SPOTIPY_REDIRECT_URI'] = 'http://127.0.0.1:8888/callback' # Use um dos seus Redirect URIs registrados
+os.environ['SPOTIPY_REDIRECT_URI'] = 'http://127.0.0.1:8888/callback'
 
-# Definindo os escopos necessários para reprodução
-# user-read-playback-state: para ler o estado de reprodução
-# user-modify-playback-state: para controlar a reprodução (play, pause, skip)
-# user-read-currently-playing: para ver a música atual
 SCOPE = "user-read-playback-state,user-modify-playback-state,user-read-currently-playing"
 
 sp = None # Variável global para a instância do Spotipy
@@ -73,8 +102,6 @@ def authenticate_spotify():
     global sp
     try:
         auth_manager = SpotifyOAuth(scope=SCOPE, cache_path=".spotify_token_cache")
-        # O .spotify_token_cache é um arquivo onde o spotipy guarda o token
-        # para não precisar autenticar novamente toda hora.
         sp = spotipy.Spotify(auth_manager=auth_manager)
         speak("Conectado ao Spotify.")
     except Exception as e:
@@ -95,7 +122,6 @@ except Exception as e:
 
 # --- FUNÇÕES DE FALA E ESCUTA ---
 
-# speak agora aceita 'lang' para gTTS, permitindo respostas em inglês se desejado
 def speak(text, lang='pt'):
     print(f"[SPEAK ONLINE - {lang.upper()}]", text)
     try:
@@ -116,16 +142,13 @@ def speak_offline(text):
     print("[SPEAK OFFLINE]", text)
     engine = pyttsx3.init()
     voices = engine.getProperty('voices')
-    # Tenta encontrar uma voz em português do Brasil
     for voice in voices:
         if "brazil" in voice.name.lower() or "portuguese" in voice.name.lower():
             engine.setProperty('voice', voice.id)
             break
-    # Se não encontrar, usará a voz padrão do sistema, que pode ser em inglês
     engine.say(text)
     engine.runAndWait()
 
-# listen volta a ser padrão para pt-BR, pois o Google Speech Recognition consegue captar nomes em inglês
 def listen(timeout=5, phrase_time_limit=6):
     with sr.Microphone() as source:
         try:
@@ -134,7 +157,7 @@ def listen(timeout=5, phrase_time_limit=6):
             print("Reconhecendo...")
             return r.recognize_google(audio, language='pt-BR').lower()
         except (sr.WaitTimeoutError, sr.UnknownValueError):
-            print("Não entendi o que você disse.") # Adicionei uma mensagem aqui
+            print("Não entendi o que você disse.")
             return ""
         except sr.RequestError as e:
             print(f"Erro no serviço de reconhecimento; {e}")
@@ -143,7 +166,7 @@ def listen(timeout=5, phrase_time_limit=6):
             print(f"Erro na escuta: {e}")
             return ""
 
-# --- FUNÇÕES DE COMANDOS (Sem alterações aqui, elas já manipulam strings) ---
+# --- FUNÇÕES DE COMANDOS ---
 
 def add_event(text):
     data_cadastro = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -295,8 +318,6 @@ def play_spotify_music_api(music_name):
             return speak("Não consegui autenticar com o Spotify. A reprodução não pode continuar.")
 
     try:
-        # Busca por tracks - O SPOTIFY API É ÓTIMO EM LIDAR COM NOMES EM QUALQUER IDIOMA
-        # O importante é que a transcrição do speech_recognition seja precisa.
         results = sp.search(q=music_name, type='track', limit=1)
         if not results['tracks']['items']:
             return speak(f"Não encontrei a música {music_name} no Spotify.")
@@ -305,7 +326,6 @@ def play_spotify_music_api(music_name):
         track_name = results['tracks']['items'][0]['name']
         artist_name = results['tracks']['items'][0]['artists'][0]['name']
 
-        # Tenta encontrar um dispositivo ativo
         devices = sp.devices()
         active_device_id = None
         for device in devices['devices']:
@@ -317,26 +337,21 @@ def play_spotify_music_api(music_name):
             sp.start_playback(device_id=active_device_id, uris=[track_uri])
             speak(f"Tocando {track_name} de {artist_name} no Spotify.")
         else:
-            # Se não houver dispositivo ativo, tenta transferir para o primeiro encontrado
             if devices['devices']:
                 speak("Nenhum dispositivo Spotify ativo. Tentando iniciar no primeiro dispositivo encontrado.")
                 first_device_id = devices['devices'][0]['id']
                 sp.transfer_playback(device_id=first_device_id, force_play=True)
-                # Dá um pequeno tempo e tenta iniciar a música novamente no dispositivo transferido
                 time.sleep(1)
                 sp.start_playback(device_id=first_device_id, uris=[track_uri])
                 speak(f"Tocando {track_name} de {artist_name} no Spotify.")
             else:
                 speak("Não encontrei nenhum dispositivo Spotify para tocar a música. Por favor, abra o Spotify em algum lugar.")
-                # Fallback: abrir no navegador de pesquisa como antes
                 webbrowser.open(f"https://open.spotify.com/search/{music_name.replace(' ', '%20')}")
-
 
     except spotipy.exceptions.SpotifyException as se:
         print(f"Erro do Spotify API: {se}")
         if "Authentication failed" in str(se):
             speak("Sua sessão do Spotify expirou ou está inválida. Por favor, autentique novamente.")
-            # Remove o cache para forçar nova autenticação na próxima vez
             if os.path.exists(".spotify_token_cache"):
                 os.remove(".spotify_token_cache")
             sp = None
@@ -351,7 +366,6 @@ def open_youtube_video(query):
     if not query:
         return speak("Por favor, diga o que você gostaria de procurar no YouTube.")
     
-    # Substitui espaços por '+' para a URL de pesquisa
     search_query = query.replace(' ', '+')
     youtube_url = f"https://www.youtube.com/results?search_query={search_query}"
     
@@ -363,115 +377,283 @@ def open_youtube_video(query):
         speak("Desculpe, não consegui abrir o YouTube no seu navegador.")
 
 
-# --- LOOP PRINCIPAL CONSOLIDADO ---
-speak("Assistente pronta. Diga 'Ok Jarvis' para ativar.")
+# --- NOVAS FUNÇÕES DE RECONHECIMENTO DE IMAGEM ---
 
-# Autentica o Spotify ao iniciar o assistente
-authenticate_spotify()
+# Função para carregar e codificar faces conhecidas
+known_face_encodings = []
+known_face_names = []
 
-try:
+def load_known_faces():
+    global known_face_encodings, known_face_names
+    known_face_encodings = [] # Limpa as listas antes de carregar novamente
+    known_face_names = []
+
+    faces_dir = 'faces'
+    os.makedirs(faces_dir, exist_ok=True)
+
+    if not os.listdir(faces_dir):
+        speak("Nenhuma face conhecida encontrada. Por favor, adicione imagens de pessoas no diretório 'faces'.")
+        return
+
+    speak("Carregando faces conhecidas...")
+    for filename in os.listdir(faces_dir):
+        if filename.lower().endswith((".jpg", ".png", ".jpeg")):
+            try:
+                name = os.path.splitext(filename)[0].replace('_', ' ').replace('-', ' ').title() # Formata o nome
+                image_path = os.path.join(faces_dir, filename)
+                image = face_recognition.load_image_file(image_path)
+                encodings = face_recognition.face_encodings(image)
+                if encodings:
+                    known_face_encodings.append(encodings[0])
+                    known_face_names.append(name)
+                    print(f"Face de '{name}' carregada.")
+                else:
+                    print(f"Não foi possível encontrar face em '{filename}'.")
+            except Exception as e:
+                print(f"Erro ao carregar face '{filename}': {e}")
+    
+    if known_face_names:
+        speak(f"Carreguei {len(known_face_names)} faces conhecidas.")
+    else:
+        speak("Não consegui carregar nenhuma face conhecida.")
+
+# Carregar faces ao iniciar, se a biblioteca estiver disponível
+if FACE_RECOGNITION_AVAILABLE:
+    load_known_faces()
+
+def recognize_face():
+    if not FACE_RECOGNITION_AVAILABLE:
+        return speak("Desculpe, a biblioteca 'face_recognition' não está instalada ou configurada.")
+    
+    # Se ainda não houver faces, tenta carregar novamente
+    if not known_face_names:
+        speak("Nenhuma face conhecida para comparar. Tentando carregar novamente.")
+        load_known_faces()
+        if not known_face_names:
+            return speak("Ainda não consegui carregar nenhuma face conhecida. Certifique-se de que há imagens no diretório 'faces'.")
+
+    speak("Abrindo a câmera para reconhecimento facial. Pressione 'q' para sair.")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        return speak("Não consegui acessar a câmera para reconhecimento facial. Verifique se ela está conectada e não está em uso.")
+
+    process_this_frame = True
+    last_spoken_name = ""
+    last_speak_time = time.time()
+    SPEAK_INTERVAL = 3 # Falar a cada 3 segundos se a mesma pessoa for detectada
+
     while True:
-        print("\nAguardando wake word...")
-        wake = listen(timeout=10, phrase_time_limit=4)
-        if any(w in wake for w in ["ok Jarvis", "Jarvis"]): # Mantém a wake word em português
-            speak("Sim?")
-            cmd = listen(timeout=6, phrase_time_limit=7)
-            print("Comando:", cmd)
-            if not cmd:
-                speak("Não ouvi nenhum comando.")
-                continue
+        ret, frame = cap.read()
+        if not ret:
+            speak("Falha ao capturar imagem da câmera.")
+            break
 
-            # --- Bloco de Comandos ---
-            if any(w in cmd for w in ["cadastrar evento", "novo evento"]):
-                speak("Ok, qual evento devo cadastrar?")
-                ev = listen(timeout=8, phrase_time_limit=10)
-                if ev: add_event(ev)
-                else: speak("Não consegui ouvir o evento.")
+        small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+        rgb_small_frame = small_frame[:, :, ::-1] # Converte de BGR para RGB
 
-            elif any(w in cmd for w in ["ler agenda", "mostrar agenda"]):
-                read_agenda()
+        face_locations = []
+        face_encodings = []
+        face_names = []
 
-            elif "limpar agenda" in cmd:
-                clear_agenda()
+        if process_this_frame:
+            face_locations = face_recognition.face_locations(rgb_small_frame)
+            face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
 
-            elif any(w in cmd for w in ["que horas", "horas são"]):
-                speak(f"Agora são {datetime.datetime.now().strftime('%H:%M')}.")
+            for face_encoding in face_encodings:
+                matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+                name = "Desconhecido"
 
-            elif any(w in cmd for w in ["que dia", "data de hoje"]):
-                speak(f"Hoje é {datetime.datetime.now().strftime('%d de %B de %Y')}.")
+                face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+                if len(face_distances) > 0: # Garante que há distâncias para comparar
+                    best_match_index = np.argmin(face_distances)
+                    if matches[best_match_index]:
+                        name = known_face_names[best_match_index]
+                
+                face_names.append(name)
+                
+                # Feedback de voz
+                if name != "Desconhecido" and (name != last_spoken_name or (time.time() - last_speak_time > SPEAK_INTERVAL)):
+                    speak(f"Olá, {name}.")
+                    last_spoken_name = name
+                    last_speak_time = time.time()
+                elif name == "Desconhecido" and (name != last_spoken_name or (time.time() - last_speak_time > SPEAK_INTERVAL)):
+                    speak("Reconheci uma face desconhecida.")
+                    last_spoken_name = name
+                    last_speak_time = time.time()
 
-            elif any(w in cmd for w in ["previsão", "clima", "tempo"]):
-                speak("Para qual cidade?")
-                city = listen(timeout=5, phrase_time_limit=5)
-                if city: speak(get_weather(city))
-                else: speak("Não entendi o nome da cidade.")
-            
-            elif any(w in cmd for w in ["cotação", "valor", "preço", "dólar", "euro", "bitcoin"]):
-                found_currency = next((data for name, data in CURRENCY_MAP.items() if name in cmd), None)
-                if found_currency:
-                    speak(get_currency_rate(found_currency['code'], found_currency['name']))
-                else: speak("Não reconheci essa moeda. Tente dólar, euro ou bitcoin.")
+        process_this_frame = not process_this_frame
 
-            elif any(w in cmd for w in ["print", "capturar tela"]):
-                speak("Ok, tirando um print.")
-                speak(take_screenshot())
+        for (top, right, bottom, left), name in zip(face_locations, face_names):
+            top *= 4
+            right *= 4
+            bottom *= 4
+            left *= 4
 
-            elif any(w in cmd for w in ["ajustar volume", "colocar volume"]):
-                match = re.search(r'\d+', cmd)
-                if match: speak(set_volume(int(match.group(0))))
-                else: speak("Não entendi o nível. Diga um número de 0 a 100.")
+            color = (0, 0, 255) if name == "Desconhecido" else (0, 255, 0) # Vermelho para desconhecido, verde para conhecido
+            cv2.rectangle(frame, (left, top), (right, bottom), color, 2)
+            cv2.rectangle(frame, (left, bottom - 35), (right, bottom), color, cv2.FILLED)
+            font = cv2.FONT_HERSHEY_DUPLEX
+            cv2.putText(frame, name, (left + 6, bottom - 6), font, 1.0, (255, 255, 255), 1)
 
-            elif any(w in cmd for w in ["aumentar volume", "mais alto"]):
-                speak(change_volume(0.10))
+        cv2.imshow('Reconhecimento Facial', frame)
 
-            elif any(w in cmd for w in ["abaixar volume", "diminuir volume"]):
-                speak(change_volume(-0.10))
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
 
-            elif any(w in cmd for w in ["equação", "resolver"]):
-                resolver_equacao(cmd)
-            
-            # --- COMANDO PARA O SPOTIFY API ---
-            elif "tocar música" in cmd or "play song" in cmd:
-                music_name = ""
-                match_pt = re.search(r"(tocar música|tocar a música)\s+(.*?)(?:\s+(?:no|do)\s+spotify)?$", cmd)
-                match_en = re.search(r"(play song|play the song)\s+(.*?)(?:\s+(?:on)\s+spotify)?$", cmd)
+    cap.release()
+    cv2.destroyAllWindows()
+    speak("Reconhecimento facial encerrado.")
 
-                if match_pt:
-                    music_name = match_pt.group(2).strip()
-                elif match_en:
-                    music_name = match_en.group(2).strip()
 
-                if music_name:
-                    speak(f"Procurando por {music_name} no Spotify.")
-                    play_spotify_music_api(music_name)
-                else:
-                    speak("Qual música você gostaria de tocar?")
-            
-            # --- NOVO COMANDO PARA YOUTUBE ---
-            elif any(w in cmd for w in ["abrir youtube", "procurar no youtube", "tocar vídeo", "ver vídeo"]):
-                speak("O que você gostaria de procurar no YouTube?")
-                video_query = listen(timeout=8, phrase_time_limit=10)
-                if video_query:
-                    open_youtube_video(video_query)
-                else:
-                    speak("Não entendi o que você quer ver no YouTube.")
+def recognize_text():
+    global reader # Acessa o leitor EasyOCR globalmente
+    if not EASYOCR_AVAILABLE:
+        return speak("Desculpe, a biblioteca 'easyocr' não está instalada ou configurada corretamente.")
 
-            elif any(w in cmd for w in ["sair", "encerrar", "desligar"]):
-                speak("Encerrando assistente. Até mais.")
-                break
+    speak("Abrindo a câmera para reconhecimento de letras. Pressione 'q' para sair.")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        return speak("Não consegui acessar a câmera para reconhecimento de letras. Verifique se ela está conectada e não está em uso.")
+    
+    last_spoken_text = ""
+    last_speak_time = time.time()
+    SPEAK_INTERVAL = 5 # Falar a cada 5 segundos se o texto mudar significativamente
 
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            speak("Falha ao capturar imagem da câmera.")
+            break
+
+        # EasyOCR prefere imagens diretamente do OpenCV (BGR ou RGB)
+        # Não precisa converter para escala de cinza ou PIL Image especificamente para o EasyOCR,
+        # ele lida com isso internamente.
+
+        try:
+            # Usar o reader para reconhecer texto no frame
+            # O resultado é uma lista de tuplas: (bbox, text, confidence)
+            results = reader.readtext(frame, detail=0, paragraph=True) # detail=0 retorna apenas o texto, paragraph=True tenta agrupar linhas
+
+            clean_text = ' '.join(results).strip() # Junta todos os textos reconhecidos
+
+            if clean_text:
+                # Desenhar o texto na tela para feedback visual (opcional)
+                cv2.putText(frame, clean_text[:50], (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                
+                # Lógica para falar apenas quando o texto for novo ou significativo
+                if clean_text != last_spoken_text and \
+                   (time.time() - last_speak_time > SPEAK_INTERVAL or \
+                    len(set(clean_text.split()) - set(last_spoken_text.split())) > 2):
+                    
+                    print("Texto reconhecido:", clean_text)
+                    speak(f"Reconheci o texto: {clean_text[:50]}...") # Limita a fala para não ser muito longa
+                    last_spoken_text = clean_text
+                    last_speak_time = time.time()
             else:
-                try:
-                    # Tenta avaliar o comando como uma expressão matemática
-                    result = safe_eval(cmd)
-                    speak(f"O resultado é {result}")
-                except (ValueError, SyntaxError):
-                    # Se não for um comando ou uma expressão, tenta buscar no Google
-                    speak(f"Comando não reconhecido. Procurando por '{cmd}' no Google.")
-                    webbrowser.open(f"https://www.google.com/search?q={cmd.replace(' ', '+')}")
+                 cv2.putText(frame, "Nenhum texto detectado", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
 
-except KeyboardInterrupt:
-    speak("Encerrando por interrupção.")
-except Exception as e:
-    print("Erro principal:", e)
-    speak("Ocorreu um erro, veja o console.")
+        except Exception as e:
+            print(f"Erro ao reconhecer texto com EasyOCR: {e}")
+            cv2.putText(frame, "Erro no EasyOCR", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        cv2.imshow('Reconhecimento de Letras (EasyOCR)', frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    speak("Reconhecimento de letras encerrado.")
+
+# Para reconhecimento de objetos/animais, usaremos detecção de objetos YOLOv3 com OpenCV
+# --- CONFIGURAÇÃO YOLOv3 ---
+# Verifique se os arquivos do modelo YOLOv3 (weights, config, names) estão na pasta 'yolo_model'
+
+coco_names = []
+net = None
+YOLO_AVAILABLE = False
+
+# Cria o diretório 'yolo_model' se não existir
+os.makedirs('yolo_model', exist_ok=True)
+
+# Verifica se os arquivos do modelo existem
+yolo_weights_path = 'yolo_model/yolov3.weights'
+yolo_config_path = 'yolo_model/yolov3.cfg'
+coco_names_path = 'yolo_model/coco.names'
+
+if not (os.path.exists(yolo_weights_path) and os.path.exists(yolo_config_path) and os.path.exists(coco_names_path)):
+    print("\nAVISO: Arquivos do modelo YOLOv3 não encontrados na pasta 'yolo_model'.")
+    print("Para reconhecimento de objetos, baixe os arquivos:")
+    print(f"  - {yolo_weights_path} (grande, ~240MB): https://pjreddie.com/media/files/yolov3.weights")
+    print(f"  - {yolo_config_path}: https://github.com/pjreddie/darknet/blob/master/cfg/yolov3.cfg")
+    print(f"  - {coco_names_path}: https://github.com/pjreddie/darknet/blob/master/data/coco.names")
+    print("Coloque-os na pasta 'yolo_model'. Reconhecimento de objetos estará desativado por enquanto.\n")
+else:
+    try:
+        with open(coco_names_path, 'r') as f:
+            coco_names = [line.strip() for line in f.readlines()]
+        net = cv2.dnn.readNet(yolo_weights_path, yolo_config_path)
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_OPENCV)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU) # Pode mudar para DNN_TARGET_CUDA para GPU se tiver uma
+        YOLO_AVAILABLE = True
+        print("Modelo YOLOv3 carregado com sucesso.")
+    except Exception as e:
+        print(f"Erro ao carregar o modelo YOLOv3 ou 'coco.names': {e}")
+        print("Verifique se os arquivos estão corretos e o OpenCV está funcionando.")
+        YOLO_AVAILABLE = False
+
+
+def recognize_objects():
+    if not YOLO_AVAILABLE:
+        return speak("Desculpe, os arquivos do modelo YOLOv3 não foram encontrados ou carregados corretamente. Por favor, verifique a pasta 'yolo_model'.")
+
+    speak("Abrindo a câmera para reconhecimento de objetos e animais. Pressione 'q' para sair.")
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        return speak("Não consegui acessar a câmera para reconhecimento de objetos. Verifique se ela está conectada e não está em uso.")
+
+    layer_names = net.getLayerNames()
+    # Pega os nomes das camadas de saída para o YOLO
+    output_layers = [layer_names[i[0] - 1] for i in net.getUnconnectedOutLayers()]
+    
+    last_spoken_objects = set()
+    last_speak_time = time.time()
+    SPEAK_INTERVAL = 5 # Falar a cada 5 segundos se houver novos objetos ou mudança
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            speak("Falha ao capturar imagem da câmera.")
+            break
+
+        height, width, channels = frame.shape
+
+        blob = cv2.dnn.blobFromImage(frame, 0.00392, (416, 416), (0, 0, 0), True, crop=False)
+        net.setInput(blob)
+        outs = net.forward(output_layers)
+
+        class_ids = []
+        confidences = []
+        boxes = []
+        current_objects_detected = set()
+
+        for out in outs:
+            for detection in out:
+                scores = detection[5:]
+                class_id = np.argmax(scores)
+                confidence = scores[class_id]
+                if confidence > 0.5: # Limite de confiança
+                    center_x = int(detection[0] * width)
+                    center_y = int(detection[1] * height)
+                    w = int(detection[2] * width)
+                    h = int(detection[3] * height)
+
+                    x = int(center_x - w / 2)
+                    y = int(center_y - h / 2)
+
+                    boxes.append([x, y, w, h])
+                    confidences.append(float(confidence))
+                    class_ids.append(class_id)
+                    
+                    if class_id < len(coco_names): # Garante que o ID da classe é válido
+                        current_objects_detected.add(coco_names[class_id])
