@@ -7,7 +7,4 @@ requests
 Pillow
 pycaw
 comtypes
-opencv-python
-numpy
-face_recognition
-easyocr
+pyaudio
