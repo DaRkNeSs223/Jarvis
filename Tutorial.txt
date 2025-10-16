@@ -1,0 +1,10 @@
+Tutorial
+
+Após baixar tudo, e extrair na sua área de trabalho, abra o VSCode.
+
+No canto superior esquerdo, clique em "File" ou "Arquivo".
+Clique em "Open Folder..." ou "Abrir Pasta..."
+Procure pela pasta com os arquivos do assistente de voz e clique em "Selecionar Pasta".
+Após abrir a pasta do arquivo no VSCode, abra um terminal clicando em "Terminal" e "New Terminal" ou "Novo Terminal".
+Com o Terminal aberto, digite: pip install -r requirements.txt e aperte enter. Isso fará com que seja instalado todas as livrarias necessárias
+
